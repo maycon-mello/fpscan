@@ -20,6 +20,8 @@
  */
 
 #include <signal.h>
+#include <dirent.h>
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -228,8 +230,6 @@ discover_device(struct fp_dscv_dev *ddev, const int verbose_flag)
       printf ("Found %s\n", fp_driver_get_full_name (drv));
       printf ("  Driver name: %s\n", fp_driver_get_name (drv));
       printf ("  Driver ID:   %d\n", (int) fp_driver_get_driver_id (drv));
-      printf ("  Scan type:   %d (0=press, 1=swipe)\n",
-	      fp_driver_get_scan_type (drv));
       printf ("  Device ID:   %d\n", (int) get_device_id (ddev));
       printf ("  Num Enroll Stages:  %d\n", fp_dev_get_nr_enroll_stages (dev));
       printf ("  Devtype:            %d\n", (int) fp_dev_get_devtype (dev));
@@ -241,10 +241,10 @@ discover_device(struct fp_dscv_dev *ddev, const int verbose_flag)
     {
       printf ("\
 %s\n\
-  %d %d %d %d %d %d %d\n\
+  %d %d %d %d %d %d\n\
 ",	      fp_driver_get_full_name (drv),
 	      (int) fp_driver_get_driver_id (drv),
-	      fp_driver_get_scan_type (drv),
+	      // fp_driver_get_scan_type (drv),
 	      fp_dev_get_nr_enroll_stages (dev),
 	      (int) fp_dev_get_devtype (dev),
 	      fp_dev_supports_imaging (dev),
@@ -256,9 +256,7 @@ discover_device(struct fp_dscv_dev *ddev, const int verbose_flag)
 }
 
 
-static void
-detect_devices(int verbose_flag)
-{
+static void detect_devices(int verbose_flag) {
   int dev_num = 0;
   struct fp_dscv_dev *curr_dev;
 
@@ -293,9 +291,7 @@ detect_devices(int verbose_flag)
 /**
  * Save binary fingerprint data to file.
  */
-static int
-save_print_data(struct fp_print_data *data, char *filename, int verbose_flag)
-{
+static int save_print_data(struct fp_print_data *data, char *filename, int verbose_flag) {
   FILE *fp;
   size_t len;
   unsigned char *buf;
@@ -317,9 +313,7 @@ save_print_data(struct fp_print_data *data, char *filename, int verbose_flag)
 }
 
 
-static int
-do_scan(const long int device_num, int verbose_flag, int image_flag)
-{
+static int do_scan(const long int device_num, int verbose_flag, int image_flag) {
   struct fp_dscv_dev *dev;
   struct fp_dev *handle;
   struct fp_print_data *data;
@@ -396,7 +390,9 @@ do_scan(const long int device_num, int verbose_flag, int image_flag)
 	  if (image_flag != 0)
 	    {
 	      /* The image data were requested */
+        fp_img_standardize(img);
 	      fp_img_save_to_file (img, "data.pgm");
+        
 	      if (verbose_flag != 0)
 		{
 		  printf ("Wrote image to data.pgm\n");
@@ -431,9 +427,7 @@ do_scan(const long int device_num, int verbose_flag, int image_flag)
  *
  * XXX: Care for all possible error conditions.
  */
-static int
-load_from_file(char *path, struct fp_print_data **data, int verbose_flag)
-{
+static int load_from_file(char *path, struct fp_print_data **data, int verbose_flag) {
   const unsigned int BUFLEN=4096;
   struct fp_print_data *fdata;
   size_t length = 0, tmp_length = 0;
@@ -477,85 +471,116 @@ load_from_file(char *path, struct fp_print_data **data, int verbose_flag)
   return EXIT_SUCCESS;
 }
 
+static int get_file_count() {
+  int count = 0;
+  struct dirent *dir;
+  DIR *d = opendir("data");
+  
+  while ((dir = readdir(d)) != NULL) {
+    if (strstr(dir->d_name, ".fpm")) {
+      count++;
+    }
+  }
+  return count;
+}
 
-static int
-verify_fp(const long int device_num, int verbose_flag)
-{
+static int verify_fp(const long int device_num, int verbose_flag) {
   int result;
-  struct fp_print_data *data_from_file;
-  enum fp_verify_result verify_result;
   struct fp_dscv_dev *dev;
   struct fp_dev *handle;
+  struct fp_print_data **gallery;
+  char **file_names;
+  char file_count = get_file_count();
+  gallery = malloc(sizeof(*gallery) * file_count + 1);
+  file_names = malloc(sizeof(*gallery) * file_count + 1);
+  
+  gallery[file_count] = NULL; /* NULL-terminate */
 
-  /* Try to load fingerprint data from file */
-  result = load_from_file (filename, &data_from_file, verbose_flag);
-  if (result != EXIT_SUCCESS)
-    {
-      fprintf (stderr, "Could not load data from file: %s.\n", filename);
-      return EXIT_FAILURE;
+  int count = 0;
+  struct fp_print_data *data_from_file;
+  enum fp_verify_result verify_result = FP_VERIFY_NO_MATCH;
+  char *currentFile = "";
+  size_t match_offset = -1;
+  DIR *d;
+  struct dirent *dir;
+  d = opendir("data");
+
+  while ((dir = readdir(d)) != NULL) {
+    if (strstr(dir->d_name, ".fpm")) {
+      char path[1024] = "";
+      filename = "./data/";
+      strcat(path, "./data/");
+      strcat(path, dir->d_name);
+
+      currentFile = dir->d_name;
+
+      result = load_from_file (path, &data_from_file, verbose_flag);
+      gallery[count] = data_from_file;
+      file_names[count] = currentFile;
+
+      count++;
+
+      if (result != EXIT_SUCCESS) {
+        fprintf (stderr, "Could not load data from file: %s.\n", path);
+        return EXIT_FAILURE;
+      }
     }
+  }
 
   dev = get_device_by_id (device_num);
-  if (dev == NULL)
-    {
-      fprintf (stderr, "Invalid device number: %ld.\n", device_num);
-      return EXIT_FAILURE;
-    }
+
+  if (dev == NULL) {
+    fprintf (stderr, "Invalid device number: %ld.\n", device_num);
+    return EXIT_FAILURE;
+  }
+
   handle = fp_dev_open (dev);
-  if (handle == NULL)
-    {
-      fprintf (stderr, "Could not open device.\n");
-      return EXIT_FAILURE;
-    }
 
-  if (verbose_flag != 0)
-    {
-      printf ("Scanning finger, please touch the device\n");
-    }
-  verify_result = fp_verify_finger (handle, data_from_file);
+  if (handle == NULL) {
+    fprintf (stderr, "Could not open device.\n");
+    return EXIT_FAILURE;
+  }
 
-  switch (verify_result)
-    {
+  if (verbose_flag != 0) {
+    printf ("Scanning finger, please touch the device\n");
+  }
+
+  verify_result = fp_identify_finger(handle, gallery, &match_offset);
+
+  fp_dev_close (handle);
+
+  closedir(d);
+
+  switch (verify_result) {
     case FP_VERIFY_NO_MATCH:
-      if (verbose_flag != 0)
-	{
-	  printf ("No match\n");
-	}
-      else
-	{
-	  printf ("no-match\n");
-	}
+      if (verbose_flag != 0) {
+	      printf ("No match\n");
+	    } else {
+	      printf ("no-match");
+	    }
       break;
     case FP_VERIFY_MATCH:
-      if (verbose_flag != 0)
-	{
-	  printf ("Match\n");
-	}
-      else
-	{
-	  printf ("ok\n");
-	}
+      if (verbose_flag != 0) {
+        currentFile = file_names[match_offset];
+        printf("%s\n", currentFile);
+      } else {
+        currentFile = file_names[match_offset];
+	      printf("%s", currentFile);
+	    }
       break;
     default:
-      if (verbose_flag != 0)
-	{
-	  printf ("Error while scanning\n");
-	}
-      else
-	{
-	  printf ("error: unknown reason\n");
-	}
+      if (verbose_flag != 0) {
+        printf ("Error while scanning\n");
+      } else {
+        printf ("error");
+      }
       return EXIT_FAILURE;
     }
-  fp_dev_close (handle);
   return EXIT_SUCCESS;
 }
 
 
-
-int
-main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
   char *_end_ptr;
   int _option_index = 0;
   int verbose_flag = 0;
